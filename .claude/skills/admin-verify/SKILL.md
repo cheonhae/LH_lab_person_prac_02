@@ -17,9 +17,15 @@ description: 공고·민원 자료(회의 전사본·민원대장·정정 메모
 - 정정 메모(`*_정정메모*.md`)
 - 기준 파일: `CLAUDE.md`, `rules/aggregation_rules.md`, `ledger/ledger.csv`
 ## 3. 절차
-{빈칸 — 교육생이 채움: 근거 → 집계 → 정합 3단계, 각 단계 1~2줄}
+1. **근거:** 전사본으로 `utterance_table.md`·`minutes.md`·`evidence.md`를 만든다. `python3 scripts/m1_check.py` 결과와 원문을 직접 연 대조 결과를 `evidence_check.md`에 남긴다.
+2. **집계:** `rules/aggregation_rules.md` 기준으로 `python3 scripts/aggregate.py`를 실행해 `summary.csv`·`excluded_rows.csv`·`run_log.md`를 만든다. `check.md`에서 기대값·두 번째 방법과 대조한다.
+3. **정합:** 정정 메모로 바뀌는 대장 값은 `impact_list.md`를 만들어 승인받은 뒤, 대장과 승인한 위치만 한꺼번에 고친다. `python3 scripts/consistency_check.py`로 불일치 0건을 확인한다.
 ## 4. 확인 체크
-{빈칸 — 교육생이 채움: 끝내기 전에 확인할 것 3~5개}
+- [ ] `git status inputs/`에 변경이 없다(원본을 고치거나 지우지 않았다).
+- [ ] 회의록의 모든 수치·결정·기한에 `[E번호]`와 근거표 행이 있고, `m1_check.py`의 '없음'·'직접 확인' 행은 원문을 열어 대조했다.
+- [ ] 집계 결과가 기대값·두 번째 방법 결과와 모두 같고, 제외한 행은 `excluded_rows.csv`에 사유와 함께 있다.
+- [ ] 영향 목록을 승인받기 전에 대장·문서를 고치지 않았고, `consistency_report.md`의 고친 뒤 불일치가 0건이다.
+- [ ] 남은 `{확인 필요}` 항목을 모두 모아 요약에 적었다.
 ## 5. 하지 않는 것
 - `inputs/` 원본 파일을 고치거나 지우지 않는다.
 - 계산을 말로 하지 않는다. 숫자는 스크립트 실행 결과만 쓴다.
