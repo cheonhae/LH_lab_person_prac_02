@@ -1,4 +1,4 @@
-"""docs/demo_sample.csv 의 접수건수 합계를 구해 docs/sum_demo_result.md 에 저장한다.
+"""outputs/m1/demo_sample.csv 의 접수건수 합계를 구해 outputs/m1/sum_demo_result.md 에 저장한다.
 
 사용 예:
     python3 scripts/sum_demo.py                       # 전체 합계
@@ -11,8 +11,8 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = ROOT / "docs" / "demo_sample.csv"
-OUT = ROOT / "docs" / "sum_demo_result.md"
+SRC = ROOT / "outputs" / "m1" / "demo_sample.csv"
+OUT = ROOT / "outputs" / "m1" / "sum_demo_result.md"
 
 
 def main():
@@ -42,7 +42,7 @@ def main():
     lines = [
         "# demo_sample.csv 접수건수 합계",
         "",
-        f"- 원본: `docs/demo_sample.csv` (전체 {len(rows)}행)",
+        f"- 원본: `outputs/m1/demo_sample.csv` (전체 {len(rows)}행)",
         f"- 조건: {cond_text}",
         f"- 대상 행 수: {len(picked)}",
         f"- **접수건수 합계: {total:,}건**",
