@@ -1,251 +1,186 @@
-"""rules/aggregation_rules.md 기준으로 inputs/m2 CSV 두 개를 집계한다.
+"""민원대장·홍보 예산 집계 스크립트 (M2판)
 
-- 표준 라이브러리만 사용한다. 원본 CSV는 읽기만 한다.
-- 결과: outputs/m2/summary.csv, outputs/m2/excluded_rows.csv, outputs/m2/run_log.md
-- 행 번호는 머리행을 빼고 1부터 센다.
-
-실행: python3 scripts/aggregate.py
+규칙: rules/aggregation_rules.md
+실행(레포 최상위에서):
+    python scripts/aggregate.py
+    python scripts/aggregate.py --complaints inputs/m4/G-M4-02_민원대장_week2.csv --budget none --outdir outputs/m4
+원본 CSV는 읽기만 한다. 결과는 --outdir 아래 summary.csv, excluded_rows.csv, run_log.md.
+Python 표준 라이브러리만 쓴다.
 """
+import argparse
 import csv
-import sys
-from collections import Counter
-from datetime import datetime
+import os
 from decimal import Decimal, ROUND_HALF_UP
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-LEDGER = ROOT / "inputs" / "m2" / "G-M2-01_민원대장_week1.csv"
-BUDGET = ROOT / "inputs" / "m2" / "G-M2-02_홍보예산_집행현황.csv"
-OUT = ROOT / "outputs" / "m2"
-RULES = "rules/aggregation_rules.md"
+TYPES = ["자격·소득", "접수 기간·방법", "제출 서류", "임대 조건", "기타"]
+METHODS = ["콜센터", "온라인", "방문"]
+STATUSES = ["접수", "처리중", "답변완료"]
+UNRESOLVED = ["접수", "처리중"]
+# 신청방법 비표준 표기 대응표(rules/aggregation_rules.md 2.3)
+METHOD_MAP = {}
+# True면 대응표에도 없는 신청방법 표기를 '신청방법 확인 필요'로 제외한다
+STRICT_METHOD = False
+NOTICE = "> [가상 자료] 이 자료의 기관·인물·지구·업체·수치·연락처는 모두 실습용 가상 정보입니다. 실제 사실이 아니며 실무에 사용할 수 없습니다."
 
-LEDGER_ID = "G-M2-01"
-BUDGET_ID = "G-M2-02"
-MONEY = ("예산", "집행", "잔액")
 
-# 민원대장 열별 허용 값(README 열 설명 기준). 이 밖의 값은 '그 밖의 계산 불가 행'.
-ALLOWED = {
-    "신청방법": {"콜센터", "온라인", "방문"},
-    "민원유형": {"자격·소득", "접수 기간·방법", "제출 서류", "임대 조건", "기타"},
-    "적용공고": {"v1", "v2"},
-    "처리상태": {"접수", "처리중", "답변완료"},
-}
+def file_id(path):
+    return os.path.basename(path).split("_")[0]
 
 
 def read_rows(path):
-    with path.open(encoding="utf-8-sig", newline="") as f:
-        reader = csv.DictReader(f)
-        return reader.fieldnames, list(reader)
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        reader = csv.reader(f)
+        header = next(reader)
+        rows = [r for r in reader if r]
+    return header, rows
 
 
-def raw(row, fields):
-    return ",".join(row[k] for k in fields)
+def pct(num, den):
+    if den == 0:
+        return "계산 불가"
+    value = Decimal(num) * Decimal(100) / Decimal(den)
+    return str(value.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
 
 
-def to_int(text):
-    try:
-        return int(text)
-    except (TypeError, ValueError):
-        return None
-
-
-def fmt(n):
-    return f"{n:,}"
-
-
-# ---------------------------------------------------------------- 민원대장
-def process_ledger(fields, rows, excluded, log):
+def aggregate_complaints(path, summary, excluded, log):
+    header, rows = read_rows(path)
+    col = {name: i for i, name in enumerate(header)}
+    fid = file_id(path)
     seen = {}
-    kept = []
-    for i, r in enumerate(rows, 1):
-        key = f"{LEDGER_ID}:{i}"
-        # 그 밖의 계산 불가 행: 빈칸 또는 허용 값 밖
-        blank = [k for k in fields if not (r.get(k) or "").strip()]
-        odd = [k for k, ok in ALLOWED.items() if r.get(k) not in ok]
-        # 2. 중복 행: 접수번호가 같고 모든 열이 같음
-        sig = tuple(r[k] for k in fields)
-        if r["접수번호"] in seen and seen[r["접수번호"]][1] == sig:
-            first = seen[r["접수번호"]][0]
-            excluded.append((key, f"중복 행: {first}행과 접수번호·모든 열이 같음", raw(r, fields)))
-            log["rule"]["2. 중복 행"] += 1
+    valid = []
+    fixed = []
+    for n, row in enumerate(rows, start=1):
+        no = row[col["접수번호"]]
+        if no in seen:
+            excluded.append([f"{fid} {n}행", f"중복 — {seen[no]}행과 접수번호 같음({no})", ",".join(row)])
             continue
-        if blank or odd:
-            why = "빈칸 " + ",".join(blank) if blank else "허용 값 밖 " + ",".join(odd)
-            excluded.append((key, f"그 밖의 계산 불가 행({why}): 담당 확인 필요", raw(r, fields)))
-            log["rule"]["그 밖의 계산 불가 행"] += 1
-            continue
-        seen.setdefault(r["접수번호"], (i, sig))
-        kept.append(r)
-    return kept
+        seen[no] = n
+        method = row[col["신청방법"]]
+        if method not in METHODS:
+            if method in METHOD_MAP:
+                fixed.append(f"{fid} {n}행: 신청방법 정규화 '{method}' → '{METHOD_MAP[method]}'")
+                row = list(row)
+                row[col["신청방법"]] = METHOD_MAP[method]
+            elif STRICT_METHOD:
+                excluded.append([f"{fid} {n}행", f"신청방법 확인 필요 — '{method}'", ",".join(row)])
+                continue
+        valid.append(row)
+    dup_count = len(rows) - len(seen)
+    other_excluded = len(rows) - dup_count - len(valid)
+    summary.append(["민원", "원본 행 수", str(len(rows)), "행"])
+    summary.append(["민원", "제외 행 수(중복)", str(dup_count), "행"])
+    if STRICT_METHOD:
+        summary.append(["민원", "제외 행 수(신청방법 확인 필요)", str(other_excluded), "행"])
+    if METHOD_MAP:
+        summary.append(["민원", "수정 행 수(신청방법 정규화)", str(len(fixed)), "행"])
+    summary.append(["민원", "유효 민원 수", str(len(valid)), "건"])
+    for t in TYPES:
+        summary.append(["민원유형", t, str(sum(1 for r in valid if r[col["민원유형"]] == t)), "건"])
+    others = sorted({r[col["민원유형"]] for r in valid} - set(TYPES))
+    for t in others:
+        summary.append(["민원유형", t, str(sum(1 for r in valid if r[col["민원유형"]] == t)), "건"])
+    methods = METHODS + sorted({r[col["신청방법"]] for r in valid} - set(METHODS))
+    for m in methods:
+        summary.append(["신청방법", m, str(sum(1 for r in valid if r[col["신청방법"]] == m)), "건"])
+    for s in STATUSES:
+        summary.append(["처리상태", s, str(sum(1 for r in valid if r[col["처리상태"]] == s)), "건"])
+    summary.append(["처리상태", "미처리(접수·처리중)", str(sum(1 for r in valid if r[col["처리상태"]] in UNRESOLVED)), "건"])
+    log.append(f"## 민원대장 — `{path}`")
+    log.append("")
+    log.append(f"- 원본 데이터 행 수: {len(rows)}행 → 유효 민원 {len(valid)}건")
+    log.append(f"- 제외: 중복 {dup_count}행" + (f", 신청방법 확인 필요 {other_excluded}행" if STRICT_METHOD else ""))
+    log.append(f"- 수정 행: {len(fixed)}행")
+    for line in fixed:
+        log.append(f"  - {line}")
+    log.append("")
 
 
-# ---------------------------------------------------------------- 홍보예산
-def process_budget(fields, rows, excluded, log):
-    kept, reference, total_row = [], [], None
-    for i, r in enumerate(rows, 1):
-        key = f"{BUDGET_ID}:{i}"
-        # 1. 합계 행: 대조용으로 유지(집계에 더하지 않음)
-        if r["항목코드"].strip() == "합계" or not r["항목명"].strip():
-            total_row = (i, r)
-            log["rule"]["1. 합계 행(대조용 유지)"] += 1
+def aggregate_budget(path, summary, excluded, log):
+    header, rows = read_rows(path)
+    col = {name: i for i, name in enumerate(header)}
+    fid = file_id(path)
+    included = []
+    fixed = []
+    corr_budget = 0
+    corr_exec = 0
+    n_total = n_corr = n_unit = n_bal = 0
+    for n, row in enumerate(rows, start=1):
+        if row[0] == "합계":
+            excluded.append([f"{fid} {n}행", "합계 행", ",".join(row)])
+            n_total += 1
             continue
-        # 2. 중복 행: 홍보예산에는 접수번호가 없어 해당 없음(rules 4절)
-        vals = {k: to_int(r[k]) for k in MONEY}
-        if any(v is None for v in vals.values()) or r["단위"] not in ("원", "천원"):
-            excluded.append((key, "그 밖의 계산 불가 행(금액·단위 표기): 담당 확인 필요", raw(r, fields)))
-            log["rule"]["그 밖의 계산 불가 행"] += 1
+        budget = int(row[col["예산"]])
+        spent = int(row[col["집행"]])
+        balance = int(row[col["잔액"]])
+        if row[col["단위"]] == "천원":
+            budget, spent, balance = budget * 1000, spent * 1000, balance * 1000
+            fixed.append(f"{fid} {n}행: 단위 환산 천원 → 원(×1,000)")
+            n_unit += 1
+        if spent < 0:
+            excluded.append([f"{fid} {n}행", "정정 — 담당 확인(집행 음수)", ",".join(row)])
+            corr_budget += budget
+            corr_exec += spent
+            n_corr += 1
             continue
-        # 3. 단위 섞임: 천원 → 원
-        if r["단위"] == "천원":
-            before = {k: vals[k] for k in MONEY}
-            vals = {k: v * 1000 for k, v in vals.items()}
-            log["fixed"].append((key, r["항목명"], "3. 단위 섞임",
-                                 " / ".join(f"{k} {fmt(before[k])}천원" for k in MONEY),
-                                 " / ".join(f"{k} {fmt(vals[k])}원" for k in MONEY)))
-        # 4. 음수·0 정정 행: 분리해 참고값으로만
-        if vals["예산"] == 0 or vals["집행"] < 0:
-            excluded.append((key, "음수·0 정정 행: 정상 기준 합계에서 분리, 담당 확인 필요(참고값으로만 냄)", raw(r, fields)))
-            log["rule"]["4. 음수·0 정정 행"] += 1
-            reference.append((i, r["항목명"], vals))
-            continue
-        # 5. 잔액 불일치: 예산 − 집행으로 다시 계산
-        calc = vals["예산"] - vals["집행"]
-        if calc != vals["잔액"]:
-            log["fixed"].append((key, r["항목명"], "5. 잔액 불일치",
-                                 f"잔액 {fmt(vals['잔액'])}원", f"잔액 {fmt(calc)}원(예산 − 집행)"))
-            vals["잔액"] = calc
-        kept.append((i, r["항목명"], vals))
-    return kept, reference, total_row
+        if balance != budget - spent:
+            fixed.append(f"{fid} {n}행: 잔액 재계산 {balance} → {budget - spent}")
+            balance = budget - spent
+            n_bal += 1
+        included.append((budget, spent, balance))
+    b_sum = sum(r[0] for r in included)
+    e_sum = sum(r[1] for r in included)
+    r_sum = sum(r[2] for r in included)
+    summary.append(["예산", "원본 행 수", str(len(rows)), "행"])
+    summary.append(["예산", "제외 행 수(합계 행)", str(n_total), "행"])
+    summary.append(["예산", "제외 행 수(정정 — 담당 확인)", str(n_corr), "행"])
+    summary.append(["예산", "수정 행 수(단위 환산)", str(n_unit), "행"])
+    summary.append(["예산", "수정 행 수(잔액 재계산)", str(n_bal), "행"])
+    summary.append(["예산", "집계 포함 행 수", str(len(included)), "행"])
+    summary.append(["예산", "예산 합계", str(b_sum), "원"])
+    summary.append(["예산", "집행 합계", str(e_sum), "원"])
+    summary.append(["예산", "잔액 합계", str(r_sum), "원"])
+    summary.append(["예산", "집행률", pct(e_sum, b_sum), "%"])
+    summary.append(["예산", "정정 반영 참고 집행 합계", str(e_sum + corr_exec), "원"])
+    summary.append(["예산", "정정 반영 참고 집행률", pct(e_sum + corr_exec, b_sum + corr_budget), "%"])
+    log.append(f"## 홍보 예산 — `{path}`")
+    log.append("")
+    log.append(f"- 원본 데이터 행 수: {len(rows)}행 → 집계 포함 {len(included)}행")
+    log.append(f"- 제외: 합계 행 {n_total}행, 정정 — 담당 확인 {n_corr}행")
+    log.append(f"- 수정 행: {len(fixed)}행(단위 환산 {n_unit}, 잔액 재계산 {n_bal})")
+    for line in fixed:
+        log.append(f"  - {line}")
+    log.append("")
 
 
-def rate(executed, budget):
-    """집행률(%) — 마지막에 한 번만 소수 1자리로 반올림(0.5 올림)."""
-    if not budget:
-        return ""
-    return str((Decimal(executed) * 100 / Decimal(budget)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+def write_csv(path, header, rows):
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f, lineterminator="\r\n")
+        w.writerow(header)
+        w.writerows(rows)
 
 
 def main():
-    OUT.mkdir(parents=True, exist_ok=True)
-    excluded = []
-    log = {"rule": Counter(), "fixed": []}
-
-    l_fields, l_rows = read_rows(LEDGER)
-    b_fields, b_rows = read_rows(BUDGET)
-
-    ledger = process_ledger(l_fields, l_rows, excluded, log)
-    budget, reference, total_row = process_budget(b_fields, b_rows, excluded, log)
-
-    # ---------------- summary.csv
-    s = []
-    s.append(("민원대장", "집계 포함 행 수", len(ledger), "건", ""))
-    for col in ("민원유형", "처리상태", "신청방법", "적용공고"):
-        for k, v in sorted(Counter(r[col] for r in ledger).items(), key=lambda x: (-x[1], x[0])):
-            s.append(("민원대장", f"{col}: {k}", v, "건", ""))
-    unresolved = sum(1 for r in ledger if r["처리상태"] in ("접수", "처리중"))
-    s.append(("민원대장", "미처리(접수·처리중)", unresolved, "건", ""))
-
-    tb = sum(v["예산"] for _, _, v in budget)
-    te = sum(v["집행"] for _, _, v in budget)
-    tr = sum(v["잔액"] for _, _, v in budget)
-    s.append(("홍보예산", "집계 포함 행 수", len(budget), "행", "정상 기준"))
-    s.append(("홍보예산", "예산 합계", tb, "원", "정상 기준"))
-    s.append(("홍보예산", "집행 합계", te, "원", "정상 기준"))
-    s.append(("홍보예산", "잔액 합계", tr, "원", "정상 기준(잔액은 예산 − 집행으로 재계산)"))
-    s.append(("홍보예산", "집행률", rate(te, tb), "%", "정상 기준, 최종 단계에서 한 번만 반올림(소수 1자리, 0.5 올림)"))
-    for i, name, v in reference:
-        for k in MONEY:
-            s.append(("홍보예산(참고)", f"{name}({BUDGET_ID}:{i}) {k}", v[k], "원", "담당 확인 필요 — 정상 기준 합계에 미포함"))
-        rb, re_ = tb + v["예산"], te + v["집행"]
-        s.append(("홍보예산(참고)", f"{name} 반영 시 집행률", rate(re_, rb), "%", "담당 확인 필요 — 참고값"))
-
-    with (OUT / "summary.csv").open("w", encoding="utf-8-sig", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["자료", "항목", "값", "단위", "비고"])
-        w.writerows(s)
-
-    # ---------------- excluded_rows.csv
-    with (OUT / "excluded_rows.csv").open("w", encoding="utf-8-sig", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["원본행", "사유", "원본값"])
-        w.writerows(excluded)
-
-    # ---------------- run_log.md
-    ex_l = sum(1 for k, _, _ in excluded if k.startswith(LEDGER_ID))
-    ex_b = sum(1 for k, _, _ in excluded if k.startswith(BUDGET_ID))
-    total_kept_b = 1 if total_row else 0
-    lines = [
-        "> [가상 자료] 이 자료의 기관·인물·지구·업체·수치·연락처는 모두 실습용 가상 정보입니다. 실제 사실이 아니며 실무에 사용할 수 없습니다.",
-        "",
-        "# 집계 실행 기록",
-        "",
-        f"- 실행 명령: `python3 scripts/{Path(sys.argv[0]).name}`",
-        f"- 실행 시각: {datetime.now():%Y-%m-%d %H:%M:%S}",
-        f"- 집계 기준: `{RULES}`",
-        "- 행 번호: 머리행 제외, 1부터",
-        "",
-        "## 1. 입력 파일",
-        "",
-        "| 파일 | 데이터 행 수 |",
-        "|---|---|",
-        f"| `{LEDGER.relative_to(ROOT)}` | {len(l_rows)} |",
-        f"| `{BUDGET.relative_to(ROOT)}` | {len(b_rows)} |",
-        "",
-        "## 2. 행 수 전후",
-        "",
-        "| 자료 | 처리 전 | 제외 | 대조용 유지(집계 미포함) | 집계 포함 |",
-        "|---|---|---|---|---|",
-        f"| 민원대장 | {len(l_rows)} | {ex_l} | 0 | {len(ledger)} |",
-        f"| 홍보예산 | {len(b_rows)} | {ex_b} | {total_kept_b} | {len(budget)} |",
-        "",
-        "## 3. 규칙별 건수",
-        "",
-        "| 규칙 | 건수 | 처리 |",
-        "|---|---|---|",
-    ]
-    rule_rows = [
-        ("1. 합계 행(대조용 유지)", "집계 미포함, 5절 대조"),
-        ("2. 중복 행", "제외"),
-        ("3. 단위 섞임", "고쳐서 포함"),
-        ("4. 음수·0 정정 행", "제외(참고값으로만)"),
-        ("5. 잔액 불일치", "고쳐서 포함"),
-        ("그 밖의 계산 불가 행", "제외"),
-    ]
-    fixed_count = Counter(rule for _, _, rule, _, _ in log["fixed"])
-    for name, how in rule_rows:
-        n = fixed_count[name] if name in ("3. 단위 섞임", "5. 잔액 불일치") else log["rule"][name]
-        lines.append(f"| {name} | {n} | {how} |")
-    lines += [
-        "",
-        "제외한 행의 사유와 원본값은 `outputs/m2/excluded_rows.csv`에 있다.",
-        "",
-        "## 4. 고쳐서 포함한 행",
-        "",
-        "| 원본행 | 항목 | 규칙 | 고치기 전 | 고친 값 |",
-        "|---|---|---|---|---|",
-    ]
-    lines += [f"| {k} | {n} | {rule} | {b} | {a} |" for k, n, rule, b, a in log["fixed"]]
-    if total_row:
-        i, r = total_row
-        lines += [
-            "",
-            "## 5. 합계 행 대조 (대조용 유지)",
-            "",
-            f"원본 `{BUDGET_ID}:{i}` 합계 행과 재계산 정상 기준 합계를 나란히 적는다.",
-            "",
-            "| 항목 | 원본 합계 행 | 재계산(정상 기준) | 차이 |",
-            "|---|---|---|---|",
-        ]
-        for k, v in zip(MONEY, (tb, te, tr)):
-            o = to_int(r[k])
-            lines.append(f"| {k} | {fmt(o)} {r['단위']} | {fmt(v)} 원 | {fmt(o - v)} |")
-    lines.append("")
-    (OUT / "run_log.md").write_text("\n".join(lines), encoding="utf-8")
-
-    print(f"민원대장 {len(l_rows)}행 → 포함 {len(ledger)} / 제외 {ex_l}")
-    print(f"홍보예산 {len(b_rows)}행 → 포함 {len(budget)} / 제외 {ex_b} / 합계 행 대조용 {total_kept_b}")
-    print(f"홍보예산 정상 기준: 예산 {fmt(tb)}원, 집행 {fmt(te)}원, 집행률 {rate(te, tb)}%")
-    print(f"결과: {OUT.relative_to(ROOT)}/summary.csv, excluded_rows.csv, run_log.md")
+    p = argparse.ArgumentParser()
+    p.add_argument("--complaints", default="inputs/m2/G-M2-01_민원대장_week1.csv")
+    p.add_argument("--budget", default="inputs/m2/G-M2-02_홍보예산_집행현황.csv")
+    p.add_argument("--outdir", default="outputs/m2")
+    a = p.parse_args()
+    os.makedirs(a.outdir, exist_ok=True)
+    summary, excluded = [], []
+    cmd = "python scripts/aggregate.py"
+    if a.complaints != p.get_default("complaints") or a.budget != p.get_default("budget") or a.outdir != p.get_default("outdir"):
+        cmd += f" --complaints {a.complaints} --budget {a.budget} --outdir {a.outdir}"
+    log = [NOTICE, "", "# 실행 기록", "", f"- 실행 명령: `{cmd}`", "- 규칙: `rules/aggregation_rules.md`", ""]
+    aggregate_complaints(a.complaints, summary, excluded, log)
+    if a.budget != "none":
+        aggregate_budget(a.budget, summary, excluded, log)
+    log.append(f"- 결과: `{a.outdir}/summary.csv`({len(summary)}행), `{a.outdir}/excluded_rows.csv`({len(excluded)}행)")
+    write_csv(os.path.join(a.outdir, "summary.csv"), ["구분", "항목", "값", "단위"], summary)
+    write_csv(os.path.join(a.outdir, "excluded_rows.csv"), ["원본행", "사유", "원본값"], excluded)
+    with open(os.path.join(a.outdir, "run_log.md"), "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(log) + "\n")
+    for row in summary:
+        print(",".join(row))
 
 
 if __name__ == "__main__":
