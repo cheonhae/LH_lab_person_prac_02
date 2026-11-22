@@ -1,95 +1,83 @@
-"""outputs/m1/evidence.md 각 행의 '값'에 든 숫자가 원문에 글자 그대로 있는지 찾는다.
+"""근거표(outputs/m1/evidence.md)의 값이 적힌 위치의 원문에 글자 그대로 있는지 찾는다.
 
-- 표준 라이브러리만 사용. 어떤 파일도 고치지 않고 결과를 화면에만 출력한다.
-- 위치가 발언 순번([NN])이면 그 순번 발언에서, 아니면(절·표·행) 출처 파일 전체에서 찾는다.
-- 출처·위치가 'A / B'로 여러 개면 짝을 맞춰 각각의 범위를 모두 찾을 범위로 쓴다.
-- 값에 숫자가 없으면 '직접 확인'.
-- 뜻은 판단하지 않는다(글자 일치만 본다).
-
-실행: python3 scripts/m1_check.py
+판단은 하지 않는다. 값에 든 숫자(날짜·건수·%·물량)를 하나씩 꺼내
+- 위치에 발언 순번 [nn]이 있으면 그 순번 발언들에서,
+- 순번이 없으면(머리 표·절·행) 출처 파일 전체에서
+글자 그대로 찾기만 한다. 숫자가 없는 값은 '직접 확인'으로 남긴다.
+실행: python scripts/m1_check.py
 """
 import re
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 EVIDENCE = ROOT / "outputs" / "m1" / "evidence.md"
-SOURCES = {
-    "전사본": ROOT / "inputs" / "m1" / "G-M1-01_공고개정회의_전사본.md",
-    "요약": ROOT / "inputs" / "m1" / "G-M1-02_회의전_민원현황요약.md",
-    "명단": ROOT / "inputs" / "m1" / "G-M1-03_회의참석자.csv",
-    "발언 처리": ROOT / "outputs" / "m1" / "utterance_table.md",
-}
+INPUTS = ROOT / "inputs" / "m1"
 
-# 숫자 토큰: 날짜 → 시각 → 단위 붙은 수·기타 숫자 순으로 뽑는다.
-DATE = r"(?:\d{4}\. )?\d{1,2}\. \d{1,2}\.(?:\([월화수목금토일]\))?"
-TIME = r"\d{1,2}:\d{2}"
-OTHER = r"\d+(?:[-.]\d+)*%?[가-힣]?"
-TOKEN = re.compile(f"{DATE}|{TIME}|{OTHER}")
-UTTER = re.compile(r"\[(\d{2})\]")
+NUM = re.compile(r"\d{1,2}:\d{2}|\d+(?:,\d{3})*(?:\.\d+)?")
+SEQ = re.compile(r"\[(\d{2})\]")
+FILE_ID = re.compile(r"[ACG]-M1-0\d")
 
 
-def read(path):
-    return path.read_text(encoding="utf-8-sig")
+def load_sources():
+    files = {}
+    for p in sorted(INPUTS.glob("*-M1-0*")):
+        files[p.name[:7]] = p.read_text(encoding="utf-8")
+    return files
 
 
 def utterances(text):
-    """전사본에서 {'05': '발언 본문'} 사전을 만든다."""
-    out = {}
-    for m in re.finditer(r"^\*\*\[(\d{2})\][^*]*\*\*(.*)$", text, re.M):
-        out[m.group(1)] = m.group(2)
+    """전사본을 발언 순번별로 나눈다. 줄 맨 앞이 [nn](굵은 글씨 ** 포함)인 줄이 한 발언."""
+    parts = {}
+    for line in text.splitlines():
+        m = re.match(r"\s*\**\[(\d{2})\]", line)
+        if m:
+            parts[m.group(1)] = line
+    return parts
+
+
+def rows(md):
+    out = []
+    for line in md.splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) >= 6 and cells[0].isdigit():
+            out.append(dict(no=cells[0], value=cells[2], src=cells[3], loc=cells[4]))
     return out
 
 
-def parse_evidence():
-    rows = []
-    for line in read(EVIDENCE).splitlines():
-        if not re.match(r"^\| E\d+ \|", line):
-            continue
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        no, _sentence, value, src, pos = cells[:5]
-        rows.append((no, value, src, pos))
-    return rows
-
-
-def scope_text(src, pos, utt):
-    """출처·위치 짝마다 찾을 범위 글을 모아 하나로 잇는다."""
-    srcs = [s.strip() for s in src.split("/")]
-    poss = [p.strip() for p in pos.split("/")]
-    if len(poss) != len(srcs):
-        poss = [pos] * len(srcs)
-    parts = []
-    for s, p in zip(srcs, poss):
-        path = SOURCES.get(s)
-        if path is None:
-            parts.append("")
-            continue
-        nums = UTTER.findall(p)
-        if s == "전사본" and nums:
-            parts.extend(utt.get(n, "") for n in nums)
-        else:
-            parts.append(read(path))
-    return "\n".join(parts)
-
-
 def main():
-    utt = utterances(read(SOURCES["전사본"]))
+    files = load_sources()
+    result = []
+    for r in rows(EVIDENCE.read_text(encoding="utf-8")):
+        ids = FILE_ID.findall(r["src"] + " " + r["loc"]) or [k for k in files if k.endswith("01")]
+        seqs = SEQ.findall(r["loc"])
+        if seqs:
+            transcript = next((files[i] for i in ids if i.endswith("01")), "")
+            u = utterances(transcript)
+            text = "\n".join(u.get(s, "") for s in seqs)
+            # 순번 밖 출처(요약 파일 등)가 같이 적혔으면 그 파일도 함께 본다
+            text += "\n".join(files.get(i, "") for i in ids if not i.endswith("01"))
+        else:
+            text = "\n".join(files.get(i, "") for i in ids)
+        nums = [n for n in NUM.findall(r["value"]) if n != "2026"]
+        if not nums:
+            verdict, missing = "직접 확인(숫자 없음)", []
+        else:
+            missing = [n for n in nums if not re.search(r"(?<!\d)(?<!\d[.,])" + re.escape(n) + r"(?!\d|[.,]\d)", text)]
+            verdict = "있음" if not missing else "없음"
+        result.append((r["no"], r["loc"], r["value"], verdict, ", ".join(missing)))
+
     print("| # | 위치 | 값 | 결과 | 못 찾은 글자 |")
     print("|---|---|---|---|---|")
-    counts = {"있음": 0, "없음": 0, "직접 확인": 0}
-    for no, value, src, pos in parse_evidence():
-        tokens = TOKEN.findall(value)
-        if not tokens:
-            result, missing = "직접 확인", ""
-        else:
-            text = scope_text(src, pos, utt)
-            miss = [t for t in tokens if t not in text]
-            result = "없음" if miss else "있음"
-            missing = ", ".join(f"`{t}`" for t in miss)
-        counts[result] += 1
-        print(f"| {no} | {src} {pos} | {value} | {result} | {missing} |")
+    for row in result:
+        print("| " + " | ".join(row) + " |")
+    count = {}
+    for row in result:
+        count[row[3]] = count.get(row[3], 0) + 1
     print()
-    print("합계: " + " · ".join(f"{k} {v}" for k, v in counts.items()))
+    print(" / ".join(f"{k} {v}행" for k, v in count.items()))
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8")
     main()
