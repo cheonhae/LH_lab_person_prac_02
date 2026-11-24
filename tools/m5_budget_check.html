@@ -67,6 +67,13 @@
   td.num, th.num { text-align: right; white-space: nowrap; }
   tr.off td { background: #fde8e8; font-weight: 700; }
   .none { color: var(--muted); margin: 0; }
+  .downloads { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+  .downloads button {
+    font: inherit; padding: 8px 14px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--accent); background: var(--card); color: var(--accent); font-weight: 600;
+  }
+  .downloads button:hover { background: #e8f0fb; }
+  .files-note { color: var(--muted); font-size: 0.9rem; margin: 0; }
 </style>
 </head>
 <body>
@@ -107,7 +114,7 @@
   <!-- 화면 ③ 근거 파일·백업 -->
   <section id="screen-files" aria-labelledby="h-files">
     <h2 id="h-files">③ 근거 파일·백업</h2>
-    <p class="placeholder">근거 파일 세 개와 JSON 백업 내려받기가 여기에 표시됩니다.</p>
+    <div id="files"><p class="placeholder">근거 파일 세 개와 JSON 백업 내려받기가 여기에 표시됩니다.</p></div>
   </section>
 </main>
 
@@ -266,14 +273,146 @@
       () => (r.totalDiff === 0 ? "" : "off")));
   }
 
+  // ---- 근거 파일 3개 (집계 결과 / 제외 사유와 원본 값 / 실행 로그) ----
+  const RULES_TEXT = [
+    "빈칸: 구분·항목명·집행금액 중 하나라도 비어 있으면 제외",
+    "문자 숫자: 집행금액에 숫자·쉼표 외 글자가 있으면 제외(고쳐서 포함할지는 담당 검토)",
+    "중복 행: 모든 열 값이 앞 행과 같으면 처음 나온 행만 포함, 두 번째부터 제외",
+  ];
+  const csvCell = (v) => {
+    const s = v === null || v === undefined ? "" : String(v);
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const toCSV = (rows) => "﻿" + rows.map((row) => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
+  const rawText = (raw) => raw.map((v) => v || "(빈칸)").join(" | ");
+  const numOrBlank = (n) => (n === null ? "확인 필요(보고서 값 없음)" : n);
+
+  function buildSummaryCSV(r) {
+    const rows = [["구분", "재집계 소계", "보고서 소계", "차이(재집계-보고서)"]];
+    r.groups.forEach((g) => rows.push([g.group, g.recomputed, numOrBlank(g.reported), numOrBlank(g.diff)]));
+    rows.push(["총액", r.recomputedTotal, numOrBlank(r.reportTotal), numOrBlank(r.totalDiff)]);
+    rows.push([]);
+    rows.push(["판정", r.matched ? "합계 일치" : "합계 불일치"]);
+    rows.push(["전체 행", r.counts.all]);
+    rows.push(["포함 행", r.counts.included]);
+    rows.push(["제외 행", r.counts.excluded]);
+    rows.push(["보고서 행(소계·합계)", r.counts.report]);
+    rows.push(["비고", "담당 검토 후 확정"]);
+    return toCSV(rows);
+  }
+
+  function buildExcludedCSV(r) {
+    const rows = [["원본행", "사유", "원본값"]];
+    r.excluded.forEach((e) => rows.push([e.rowNo, e.reason, rawText(e.raw)]));
+    return toCSV(rows);
+  }
+
+  function buildRunLog(r, meta) {
+    const m = meta || {};
+    const sub = r.reportRows.filter((x) => x.kind === "소계").length;
+    const lines = [
+      "홍보 예산 집행 검증기 — 실행 로그",
+      "※ 담당 검토 후 확정",
+      "",
+      `파일: ${m.fileName || "(이름 없음)"}`,
+      `검사 시각: ${m.savedAt || "(기록 없음)"}`,
+      "",
+      "[정상 기준 (고정)]",
+      ...RULES_TEXT.map((t) => "- " + t),
+      "",
+      "[행 수]",
+      `전체 ${r.counts.all}행 = 포함 ${r.counts.included}행 + 제외 ${r.counts.excluded}행 + 보고서 행 ${r.counts.report}행(소계 ${sub}·합계 ${r.counts.report - sub})`,
+      `경고 ${r.warnings}건`,
+      "",
+      "[제외 행]",
+      ...(r.excluded.length ? r.excluded.map((e) => `- ${e.rowNo}행 · ${e.reason} · ${rawText(e.raw)}`) : ["- 없음"]),
+      "",
+      "[구분별 소계 (차이 = 재집계 − 보고서)]",
+      ...r.groups.map((g) => `- ${g.group}: 재집계 ${won(g.recomputed)} / 보고서 ${plainWon(g.reported)} / 차이 ${signedWon(g.diff)}`),
+      "",
+      "[총액]",
+      `재집계 ${won(r.recomputedTotal)} / 보고서 ${plainWon(r.reportTotal)} / 차이 ${signedWon(r.totalDiff)}`,
+      "",
+      `[판정] ${r.matched ? "합계 일치" : "합계 불일치"}`,
+    ];
+    return "﻿" + lines.join("\r\n") + "\r\n";
+  }
+
+  function download(name, text, type) {
+    const url = URL.createObjectURL(new Blob([text], { type: type + ";charset=utf-8" }));
+    const a = el("a", { href: url, download: name });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  // ---- 화면 ③ 근거 파일·백업 ----
+  const STORE_KEY = "m5_budget_check";
+
+  function buildBackupJSON(state) {
+    return JSON.stringify({ key: STORE_KEY, savedAt: state.savedAt, fileName: state.fileName, result: state.result }, null, 2);
+  }
+
+  function renderFiles(state) {
+    const box = document.getElementById("files");
+    box.replaceChildren();
+    const r = state && state.result;
+    if (!r || r.error) {
+      box.appendChild(el("p", { class: "placeholder", text: "근거 파일 세 개와 JSON 백업 내려받기가 여기에 표시됩니다." }));
+      return;
+    }
+    const meta = { fileName: state.fileName, savedAt: state.savedAt };
+    const btn = (label, onClick) => { const b = el("button", { type: "button", text: label }); b.addEventListener("click", onClick); return b; };
+    box.appendChild(el("h3", { text: "근거 파일 (3개)" }));
+    box.appendChild(el("div", { class: "downloads" }, [
+      btn("집계 결과 (CSV)", () => download("m5_summary.csv", buildSummaryCSV(r), "text/csv")),
+      btn("제외 사유와 원본 값 (CSV)", () => download("m5_excluded_rows.csv", buildExcludedCSV(r), "text/csv")),
+      btn("실행 로그 (TXT)", () => download("m5_run_log.txt", buildRunLog(r, meta), "text/plain")),
+    ]));
+    box.appendChild(el("h3", { text: "백업" }));
+    box.appendChild(el("div", { class: "downloads" }, [
+      btn("JSON 백업 내려받기", () => download("m5_budget_check_backup.json", buildBackupJSON(state), "application/json")),
+    ]));
+    box.appendChild(el("p", { class: "files-note", text: "파일은 이 브라우저에서만 만들어지며 외부로 보내지 않습니다. 담당 검토 후 확정." }));
+  }
+
+  // ---- 저장: localStorage 키 하나(m5_budget_check)에 마지막 검사 결과 ----
+  function saveState(state) {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); return true; } catch (e) { return false; }
+  }
+  function loadState() {
+    try {
+      const s = JSON.parse(localStorage.getItem(STORE_KEY));
+      return s && s.result && !s.result.error && Array.isArray(s.result.excluded) ? s : null;
+    } catch (e) { return null; }
+  }
+
+  function showState(state, restored) {
+    renderResult(state && state.result);
+    renderFiles(state);
+    if (!state || !state.result || state.result.error) return;
+    const label = restored ? "저장된 마지막 검사 결과" : "검사한 파일";
+    document.getElementById("result").prepend(
+      el("p", { class: "files-note", text: `${label}: ${state.fileName || "(이름 없음)"} · ${state.savedAt || ""}` }));
+  }
+
   // ---- 화면 연결 ----
-  let lastResult = null;
+  let lastState = null;
   if (typeof document !== "undefined") {
+    lastState = loadState();
+    if (lastState) showState(lastState, true);
+
     document.getElementById("csv-file").addEventListener("change", (e) => {
       const file = e.target.files && e.target.files[0];
       if (!file) return;
       const reader = new FileReader();
-      reader.onload = () => { lastResult = judge(reader.result); renderResult(lastResult); };
+      reader.onload = () => {
+        const result = judge(reader.result);
+        lastState = { savedAt: new Date().toLocaleString("ko-KR"), fileName: file.name, result };
+        if (!result.error) saveState(lastState);
+        showState(lastState, false);
+      };
       reader.readAsText(file, "utf-8");
     });
   }
