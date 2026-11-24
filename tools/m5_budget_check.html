@@ -377,9 +377,32 @@
     box.appendChild(el("p", { class: "files-note", text: "파일은 이 브라우저에서만 만들어지며 외부로 보내지 않습니다. 담당 검토 후 확정." }));
   }
 
+  // ---- 저장: localStorage 키 하나(m5_budget_check)에 마지막 검사 결과 ----
+  function saveState(state) {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); return true; } catch (e) { return false; }
+  }
+  function loadState() {
+    try {
+      const s = JSON.parse(localStorage.getItem(STORE_KEY));
+      return s && s.result && !s.result.error && Array.isArray(s.result.excluded) ? s : null;
+    } catch (e) { return null; }
+  }
+
+  function showState(state, restored) {
+    renderResult(state && state.result);
+    renderFiles(state);
+    if (!state || !state.result || state.result.error) return;
+    const label = restored ? "저장된 마지막 검사 결과" : "검사한 파일";
+    document.getElementById("result").prepend(
+      el("p", { class: "files-note", text: `${label}: ${state.fileName || "(이름 없음)"} · ${state.savedAt || ""}` }));
+  }
+
   // ---- 화면 연결 ----
   let lastState = null;
   if (typeof document !== "undefined") {
+    lastState = loadState();
+    if (lastState) showState(lastState, true);
+
     document.getElementById("csv-file").addEventListener("change", (e) => {
       const file = e.target.files && e.target.files[0];
       if (!file) return;
@@ -387,8 +410,8 @@
       reader.onload = () => {
         const result = judge(reader.result);
         lastState = { savedAt: new Date().toLocaleString("ko-KR"), fileName: file.name, result };
-        renderResult(result);
-        renderFiles(lastState);
+        if (!result.error) saveState(lastState);
+        showState(lastState, false);
       };
       reader.readAsText(file, "utf-8");
     });
