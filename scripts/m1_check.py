@@ -4,13 +4,16 @@
 - 위치에 발언 순번 [nn]이 있으면 그 순번 발언들에서,
 - 순번이 없으면(머리 표·절·행) 출처 파일 전체에서
 글자 그대로 찾기만 한다. 숫자가 없는 값은 '직접 확인'으로 남긴다.
-실행: python scripts/m1_check.py
+실행: python scripts/m1_check.py            # M1(outputs/m1/evidence.md ↔ inputs/m1)
+      python scripts/m1_check.py --module m4  # M4(outputs/m4/evidence.md ↔ inputs/m4)
 """
+import argparse
 import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+MODULE = "m1"
 EVIDENCE = ROOT / "outputs" / "m1" / "evidence.md"
 INPUTS = ROOT / "inputs" / "m1"
 
@@ -19,9 +22,17 @@ SEQ = re.compile(r"\[(\d{2})\]")
 FILE_ID = re.compile(r"[ACG]-M1-0\d")
 
 
+def set_module(module):
+    global MODULE, EVIDENCE, INPUTS, FILE_ID
+    MODULE = module
+    EVIDENCE = ROOT / "outputs" / module / "evidence.md"
+    INPUTS = ROOT / "inputs" / module
+    FILE_ID = re.compile(r"[ACG]-M" + module[1:] + r"-0\d")
+
+
 def load_sources():
     files = {}
-    for p in sorted(INPUTS.glob("*-M1-0*")):
+    for p in sorted(INPUTS.glob(f"*-M{MODULE[1:]}-0*")):
         files[p.name[:7]] = p.read_text(encoding="utf-8")
     return files
 
@@ -80,4 +91,7 @@ def main():
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--module", default="m1")
+    set_module(ap.parse_args().module)
     main()
