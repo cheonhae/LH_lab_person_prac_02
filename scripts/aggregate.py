@@ -16,8 +16,8 @@ TYPES = ["자격·소득", "접수 기간·방법", "제출 서류", "임대 조
 METHODS = ["콜센터", "온라인", "방문"]
 STATUSES = ["접수", "처리중", "답변완료"]
 UNRESOLVED = ["접수", "처리중"]
-# 신청방법 비표준 표기 대응표(rules/aggregation_rules.md 2.3)
-METHOD_MAP = {}
+# 신청방법 비표준 표기 대응표(rules/aggregation_rules.md 2.3) — 대응표에 없는 표기는 멈춤
+METHOD_MAP = {"홈페이지": "온라인", "전화": "콜센터", "내방": "방문"}
 # True면 대응표에도 없는 신청방법 표기를 '신청방법 확인 필요'로 제외한다
 STRICT_METHOD = False
 NOTICE = "> [가상 자료] 이 자료의 기관·인물·지구·업체·수치·연락처는 모두 실습용 가상 정보입니다. 실제 사실이 아니며 실무에 사용할 수 없습니다."
@@ -64,6 +64,9 @@ def aggregate_complaints(path, summary, excluded, log):
             elif STRICT_METHOD:
                 excluded.append([f"{fid} {n}행", f"신청방법 확인 필요 — '{method}'", ",".join(row)])
                 continue
+            else:
+                # rules 2.3: 대응표에 없는 표기는 임의 범주로 세지 않고 멈춘다
+                raise SystemExit(f"{{확인 필요: 신청방법 표기}} {fid} {n}행 '{method}' — rules/aggregation_rules.md 2.3절 대응표에 없음")
         valid.append(row)
     dup_count = len(rows) - len(seen)
     other_excluded = len(rows) - dup_count - len(valid)
