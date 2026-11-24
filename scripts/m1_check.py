@@ -5,7 +5,9 @@
 - 순번이 없으면(머리 표·절·행) 출처 파일 전체에서
 글자 그대로 찾기만 한다. 숫자가 없는 값은 '직접 확인'으로 남긴다.
 실행: python scripts/m1_check.py
+      python scripts/m1_check.py --module m4   # outputs/m4/evidence.md ↔ inputs/m4
 """
+import argparse
 import re
 import sys
 from pathlib import Path
@@ -13,15 +15,25 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 EVIDENCE = ROOT / "outputs" / "m1" / "evidence.md"
 INPUTS = ROOT / "inputs" / "m1"
+MODULE = "M1"
 
 NUM = re.compile(r"\d{1,2}:\d{2}|\d+(?:,\d{3})*(?:\.\d+)?")
 SEQ = re.compile(r"\[(\d{2})\]")
 FILE_ID = re.compile(r"[ACG]-M1-0\d")
 
 
+def set_module(m):
+    """--module mN: 근거표·원문 폴더와 파일 ID 형식을 그 모듈로 바꾼다(기본 m1)."""
+    global EVIDENCE, INPUTS, MODULE, FILE_ID
+    MODULE = m.upper()
+    EVIDENCE = ROOT / "outputs" / m.lower() / "evidence.md"
+    INPUTS = ROOT / "inputs" / m.lower()
+    FILE_ID = re.compile(r"[ACG]-" + MODULE + r"-0\d")
+
+
 def load_sources():
     files = {}
-    for p in sorted(INPUTS.glob("*-M1-0*")):
+    for p in sorted(INPUTS.glob(f"*-{MODULE}-0*")):
         files[p.name[:7]] = p.read_text(encoding="utf-8")
     return files
 
@@ -80,4 +92,7 @@ def main():
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--module", default="m1")
+    set_module(ap.parse_args().module)
     main()
