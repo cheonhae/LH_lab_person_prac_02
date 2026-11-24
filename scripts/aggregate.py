@@ -4,6 +4,7 @@
 실행(레포 최상위에서):
     python scripts/aggregate.py
     python scripts/aggregate.py --complaints inputs/m4/G-M4-02_민원대장_week2.csv --budget none --outdir outputs/m4
+    python scripts/aggregate.py --complaints inputs/m4/G-M4-02_민원대장_week2.csv --budget none --outdir outputs/m4 --strict-method
 원본 CSV는 읽기만 한다. 결과는 --outdir 아래 summary.csv, excluded_rows.csv, run_log.md.
 Python 표준 라이브러리만 쓴다.
 """
@@ -62,7 +63,7 @@ def aggregate_complaints(path, summary, excluded, log):
                 row = list(row)
                 row[col["신청방법"]] = METHOD_MAP[method]
             elif STRICT_METHOD:
-                excluded.append([f"{fid} {n}행", f"신청방법 확인 필요 — '{method}'", ",".join(row)])
+                excluded.append([f"{fid} {n}행", f"보류 — 신청방법 확인 필요(규칙에 없는 표기 '{method}', 미처리)", ",".join(row)])
                 continue
         valid.append(row)
     dup_count = len(rows) - len(seen)
@@ -70,7 +71,7 @@ def aggregate_complaints(path, summary, excluded, log):
     summary.append(["민원", "원본 행 수", str(len(rows)), "행"])
     summary.append(["민원", "제외 행 수(중복)", str(dup_count), "행"])
     if STRICT_METHOD:
-        summary.append(["민원", "제외 행 수(신청방법 확인 필요)", str(other_excluded), "행"])
+        summary.append(["민원", "보류 행 수(신청방법 확인 필요)", str(other_excluded), "행"])
     if METHOD_MAP:
         summary.append(["민원", "수정 행 수(신청방법 정규화)", str(len(fixed)), "행"])
     summary.append(["민원", "유효 민원 수", str(len(valid)), "건"])
@@ -88,7 +89,7 @@ def aggregate_complaints(path, summary, excluded, log):
     log.append(f"## 민원대장 — `{path}`")
     log.append("")
     log.append(f"- 원본 데이터 행 수: {len(rows)}행 → 유효 민원 {len(valid)}건")
-    log.append(f"- 제외: 중복 {dup_count}행" + (f", 신청방법 확인 필요 {other_excluded}행" if STRICT_METHOD else ""))
+    log.append(f"- 제외: 중복 {dup_count}행" + (f" / 보류(신청방법 확인 필요, 미처리) {other_excluded}행" if STRICT_METHOD else ""))
     log.append(f"- 수정 행: {len(fixed)}행")
     for line in fixed:
         log.append(f"  - {line}")
@@ -164,12 +165,17 @@ def main():
     p.add_argument("--complaints", default="inputs/m2/G-M2-01_민원대장_week1.csv")
     p.add_argument("--budget", default="inputs/m2/G-M2-02_홍보예산_집행현황.csv")
     p.add_argument("--outdir", default="outputs/m2")
+    p.add_argument("--strict-method", action="store_true", help="규칙에 없는 신청방법 표기 행을 보류(집계 제외)하고 excluded_rows.csv에 남긴다")
     a = p.parse_args()
+    global STRICT_METHOD
+    STRICT_METHOD = STRICT_METHOD or a.strict_method
     os.makedirs(a.outdir, exist_ok=True)
     summary, excluded = [], []
     cmd = "python scripts/aggregate.py"
     if a.complaints != p.get_default("complaints") or a.budget != p.get_default("budget") or a.outdir != p.get_default("outdir"):
         cmd += f" --complaints {a.complaints} --budget {a.budget} --outdir {a.outdir}"
+    if a.strict_method:
+        cmd += " --strict-method"
     log = [NOTICE, "", "# 실행 기록", "", f"- 실행 명령: `{cmd}`", "- 규칙: `rules/aggregation_rules.md`", ""]
     aggregate_complaints(a.complaints, summary, excluded, log)
     if a.budget != "none":
