@@ -51,6 +51,22 @@
   .fixed { color: var(--muted); font-size: 0.9rem; margin: 8px 0 16px; }
   label.pick { display: inline-block; font-weight: 600; margin-bottom: 6px; }
   .table-wrap { overflow-x: auto; }
+  .review {
+    background: var(--warn-bg);
+    border: 1px solid var(--warn-line);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-weight: 700;
+    margin-bottom: 12px;
+  }
+  .verdict { font-size: 1.3rem; font-weight: 700; padding: 8px 14px; border-radius: 8px; margin: 0 0 12px; }
+  .verdict.ok { background: #e3f4e8; color: #17603a; border: 1px solid #8fd1a8; }
+  .verdict.ng { background: #fde8e8; color: #a12020; border: 1px solid #ec9a9a; }
+  .counts { margin: 0 0 12px; }
+  .result h3 { font-size: 1rem; margin: 16px 0 8px; }
+  td.num, th.num { text-align: right; white-space: nowrap; }
+  tr.off td { background: #fde8e8; font-weight: 700; }
+  .none { color: var(--muted); margin: 0; }
 </style>
 </head>
 <body>
@@ -85,7 +101,7 @@
   <!-- 화면 ② 검사 결과 -->
   <section id="screen-result" aria-labelledby="h-result">
     <h2 id="h-result">② 검사 결과</h2>
-    <p class="placeholder">검사 결과가 여기에 표시됩니다.</p>
+    <div id="result" class="result"><p class="placeholder">검사 결과가 여기에 표시됩니다.</p></div>
   </section>
 
   <!-- 화면 ③ 근거 파일·백업 -->
@@ -97,7 +113,170 @@
 
 <script>
   "use strict";
-  // CSV 읽기와 표 보이기는 다음 단계에서 추가합니다.
+
+  // ---- CSV 읽기: 따옴표 안 쉼표·줄바꿈, "" 이스케이프, CRLF, BOM 처리 ----
+  function parseCSV(text) {
+    text = String(text).replace(/^﻿/, "");
+    const rows = [];
+    let row = [], cell = "", inQuotes = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (inQuotes) {
+        if (ch === '"') {
+          if (text[i + 1] === '"') { cell += '"'; i++; }
+          else inQuotes = false;
+        } else cell += ch;
+      } else if (ch === '"') inQuotes = true;
+      else if (ch === ",") { row.push(cell); cell = ""; }
+      else if (ch === "\r") { /* CRLF의 CR은 건너뜀 */ }
+      else if (ch === "\n") { row.push(cell); rows.push(row); row = []; cell = ""; }
+      else cell += ch;
+    }
+    if (cell !== "" || row.length) { row.push(cell); rows.push(row); }
+    // 파일 끝 빈 줄은 행으로 세지 않음
+    while (rows.length && rows[rows.length - 1].length === 1 && rows[rows.length - 1][0] === "") rows.pop();
+    return rows;
+  }
+
+  const COLS = ["구분", "항목명", "집행금액"];
+  const AMOUNT_OK = /^[0-9][0-9,]*$/;   // 숫자·쉼표만
+  const toNumber = (s) => Number(s.replace(/,/g, ""));
+
+  // ---- 정상 기준 판정과 재집계 ----
+  // 행 번호는 머리행을 빼고 1부터. 차이 = 재집계 − 보고서.
+  function judge(text) {
+    const table = parseCSV(text);
+    if (!table.length) return { error: "빈 파일입니다." };
+    const header = table[0].map((h) => h.trim());
+    const idx = COLS.map((c) => header.indexOf(c));
+    if (idx.some((i) => i < 0)) return { error: "열(구분, 항목명, 집행금액)을 찾지 못했습니다." };
+
+    const included = [], excluded = [], reportRows = [];
+    const firstSeen = new Map();          // 중복 판정: 포함된 행의 열 값 → 처음 나온 행 번호
+    const recomputed = new Map();         // 구분 → 재집계 소계
+    const reported = new Map();           // 구분 → 보고서 소계
+    const order = [];                     // 구분이 처음 나온 순서
+    let reportTotal = null;
+    const touch = (g) => { if (!order.includes(g)) order.push(g); };
+
+    table.slice(1).forEach((cells, k) => {
+      const rowNo = k + 1;
+      const [g, n, a] = idx.map((i) => (cells[i] === undefined ? "" : cells[i].trim()));
+      const raw = [g, n, a];
+
+      if (n === "소계" || n === "합계") {
+        const value = AMOUNT_OK.test(a) ? toNumber(a) : null;
+        reportRows.push({ rowNo, kind: n, group: g, value, raw });
+        if (n === "합계") reportTotal = value;
+        else { touch(g); reported.set(g, value); }
+        return;
+      }
+      if (!g || !n || !a) {
+        const empty = COLS.filter((_, j) => !raw[j]).join("·");
+        excluded.push({ rowNo, reason: `빈칸(${empty})`, raw });
+        return;
+      }
+      if (!AMOUNT_OK.test(a)) {
+        excluded.push({ rowNo, reason: "문자 숫자", raw });
+        return;
+      }
+      const key = JSON.stringify(raw);
+      if (firstSeen.has(key)) {
+        excluded.push({ rowNo, reason: `중복(${firstSeen.get(key)}행과 같음)`, raw });
+        return;
+      }
+      firstSeen.set(key, rowNo);
+      const amount = toNumber(a);
+      included.push({ rowNo, group: g, item: n, amount, raw });
+      touch(g);
+      recomputed.set(g, (recomputed.get(g) || 0) + amount);
+    });
+
+    const groups = order.map((g) => {
+      const re = recomputed.get(g) || 0;
+      const rp = reported.has(g) ? reported.get(g) : null;
+      return { group: g, recomputed: re, reported: rp, diff: rp === null ? null : re - rp };
+    });
+    const recomputedTotal = included.reduce((s, r) => s + r.amount, 0);
+    const totalDiff = reportTotal === null ? null : recomputedTotal - reportTotal;
+    const matched = totalDiff === 0 && groups.every((x) => x.diff === 0);
+
+    return {
+      counts: {
+        all: table.length - 1,
+        included: included.length,
+        excluded: excluded.length,
+        report: reportRows.length,
+      },
+      warnings: excluded.length,
+      included, excluded, reportRows, groups,
+      recomputedTotal, reportTotal, totalDiff, matched,
+    };
+  }
+
+  // ---- 화면 ② 검사 결과 ----
+  const won = (n) => n.toLocaleString("ko-KR") + "원";
+  const signedWon = (n) => (n === null ? "확인 필요(보고서 값 없음)"
+    : n === 0 ? "0원" : (n > 0 ? "+" : "−") + won(Math.abs(n)));
+  const plainWon = (n) => (n === null ? "확인 필요(보고서 값 없음)" : won(n));
+
+  function el(tag, attrs, children) {
+    const node = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => { if (k === "text") node.textContent = v; else node.setAttribute(k, v); });
+    (children || []).forEach((c) => node.appendChild(typeof c === "string" ? document.createTextNode(c) : c));
+    return node;
+  }
+  function table(headers, rows, rowClass) {
+    const thead = el("thead", {}, [el("tr", {}, headers.map((h) => el("th", { text: h[0], class: h[1] || "" })))]);
+    const tbody = el("tbody", {}, rows.map((cells, i) =>
+      el("tr", { class: rowClass ? rowClass(i) : "" }, cells.map((c, j) => el("td", { text: c, class: headers[j][1] || "" })))));
+    return el("div", { class: "table-wrap" }, [el("table", {}, [thead, tbody])]);
+  }
+
+  function renderResult(r) {
+    const box = document.getElementById("result");
+    box.replaceChildren();
+    if (!r || r.error) {
+      box.appendChild(el("p", { class: "placeholder", text: "검사 결과가 여기에 표시됩니다." }));
+      return;
+    }
+    const sub = r.reportRows.filter((x) => x.kind === "소계").length;
+    const tot = r.reportRows.length - sub;
+    box.appendChild(el("div", { class: "review", role: "note", text: "담당 검토 후 확정 — 아래 판정은 자동 검산 결과입니다." }));
+    box.appendChild(el("p", { class: "verdict " + (r.matched ? "ok" : "ng"), text: r.matched ? "합계 일치" : "합계 불일치" }));
+    box.appendChild(el("p", { class: "counts" }, [
+      `전체 ${r.counts.all}행 = 포함 ${r.counts.included}행 + 제외 ${r.counts.excluded}행 + 보고서 행 ${r.counts.report}행(소계 ${sub}·합계 ${tot})`,
+      el("br"), `경고 ${r.warnings}건`,
+    ]));
+
+    box.appendChild(el("h3", { text: `제외 행 (${r.excluded.length}행)` }));
+    box.appendChild(r.excluded.length
+      ? table([["행 번호", "num"], ["사유"], ["원본 값 (구분 | 항목명 | 집행금액)"]],
+          r.excluded.map((e) => [e.rowNo + "행", e.reason, e.raw.map((v) => v || "(빈칸)").join(" | ")]))
+      : el("p", { class: "none", text: "제외 행 없음" }));
+
+    box.appendChild(el("h3", { text: "구분별 소계 비교 (차이 = 재집계 − 보고서)" }));
+    box.appendChild(table([["구분"], ["재집계 소계", "num"], ["보고서 소계", "num"], ["차이", "num"]],
+      r.groups.map((g) => [g.group, won(g.recomputed), plainWon(g.reported), signedWon(g.diff)]),
+      (i) => (r.groups[i].diff === 0 ? "" : "off")));
+
+    box.appendChild(el("h3", { text: "총액 비교" }));
+    box.appendChild(table([["항목"], ["재집계 총액 (정상 기준)", "num"], ["보고서 총액", "num"], ["차이", "num"]],
+      [["총액", won(r.recomputedTotal), plainWon(r.reportTotal), signedWon(r.totalDiff)]],
+      () => (r.totalDiff === 0 ? "" : "off")));
+  }
+
+  // ---- 화면 연결 ----
+  let lastResult = null;
+  if (typeof document !== "undefined") {
+    document.getElementById("csv-file").addEventListener("change", (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => { lastResult = judge(reader.result); renderResult(lastResult); };
+      reader.readAsText(file, "utf-8");
+    });
+  }
 </script>
 </body>
 </html>
