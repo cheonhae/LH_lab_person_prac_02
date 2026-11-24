@@ -67,6 +67,13 @@
   td.num, th.num { text-align: right; white-space: nowrap; }
   tr.off td { background: #fde8e8; font-weight: 700; }
   .none { color: var(--muted); margin: 0; }
+  .downloads { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+  .downloads button {
+    font: inherit; padding: 8px 14px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--accent); background: var(--card); color: var(--accent); font-weight: 600;
+  }
+  .downloads button:hover { background: #e8f0fb; }
+  .files-note { color: var(--muted); font-size: 0.9rem; margin: 0; }
 </style>
 </head>
 <body>
@@ -107,7 +114,7 @@
   <!-- 화면 ③ 근거 파일·백업 -->
   <section id="screen-files" aria-labelledby="h-files">
     <h2 id="h-files">③ 근거 파일·백업</h2>
-    <p class="placeholder">근거 파일 세 개와 JSON 백업 내려받기가 여기에 표시됩니다.</p>
+    <div id="files"><p class="placeholder">근거 파일 세 개와 JSON 백업 내려받기가 여기에 표시됩니다.</p></div>
   </section>
 </main>
 
@@ -340,14 +347,49 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  // ---- 화면 ③ 근거 파일·백업 ----
+  const STORE_KEY = "m5_budget_check";
+
+  function buildBackupJSON(state) {
+    return JSON.stringify({ key: STORE_KEY, savedAt: state.savedAt, fileName: state.fileName, result: state.result }, null, 2);
+  }
+
+  function renderFiles(state) {
+    const box = document.getElementById("files");
+    box.replaceChildren();
+    const r = state && state.result;
+    if (!r || r.error) {
+      box.appendChild(el("p", { class: "placeholder", text: "근거 파일 세 개와 JSON 백업 내려받기가 여기에 표시됩니다." }));
+      return;
+    }
+    const meta = { fileName: state.fileName, savedAt: state.savedAt };
+    const btn = (label, onClick) => { const b = el("button", { type: "button", text: label }); b.addEventListener("click", onClick); return b; };
+    box.appendChild(el("h3", { text: "근거 파일 (3개)" }));
+    box.appendChild(el("div", { class: "downloads" }, [
+      btn("집계 결과 (CSV)", () => download("m5_summary.csv", buildSummaryCSV(r), "text/csv")),
+      btn("제외 사유와 원본 값 (CSV)", () => download("m5_excluded_rows.csv", buildExcludedCSV(r), "text/csv")),
+      btn("실행 로그 (TXT)", () => download("m5_run_log.txt", buildRunLog(r, meta), "text/plain")),
+    ]));
+    box.appendChild(el("h3", { text: "백업" }));
+    box.appendChild(el("div", { class: "downloads" }, [
+      btn("JSON 백업 내려받기", () => download("m5_budget_check_backup.json", buildBackupJSON(state), "application/json")),
+    ]));
+    box.appendChild(el("p", { class: "files-note", text: "파일은 이 브라우저에서만 만들어지며 외부로 보내지 않습니다. 담당 검토 후 확정." }));
+  }
+
   // ---- 화면 연결 ----
-  let lastResult = null;
+  let lastState = null;
   if (typeof document !== "undefined") {
     document.getElementById("csv-file").addEventListener("change", (e) => {
       const file = e.target.files && e.target.files[0];
       if (!file) return;
       const reader = new FileReader();
-      reader.onload = () => { lastResult = judge(reader.result); renderResult(lastResult); };
+      reader.onload = () => {
+        const result = judge(reader.result);
+        lastState = { savedAt: new Date().toLocaleString("ko-KR"), fileName: file.name, result };
+        renderResult(result);
+        renderFiles(lastState);
+      };
       reader.readAsText(file, "utf-8");
     });
   }
