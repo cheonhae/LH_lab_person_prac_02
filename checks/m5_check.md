@@ -14,7 +14,7 @@
 | S3 | {기대 결과} | 통과 / 실패 / 미검증 | {근거} |
 | 함정 | {계획 3절의 함정} | 통과 / 실패 / 미검증 | {근거} |
 
-- 확인한 곳: {Pages 주소 / Pages를 못 쓴 날은 main ZIP}
+- 확인한 곳: https://cheonhae.github.io/LH_lab_person_prac_02/tools/m5_budget_check.html
 
 ## 2. 발견 사항 (AI가 코드에서 찾은 것)
 

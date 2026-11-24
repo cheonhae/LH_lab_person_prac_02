@@ -34,5 +34,5 @@ Issue 하나 = 새 세션 하나 = PR 하나. 초안은 `docs/issues_draft/m5_{�
 
 ## 4. 배포
 
-- 배포 주소: {Pages 주소 — M5 5절에서 채움}
+- 배포 주소: https://cheonhae.github.io/LH_lab_person_prac_02/tools/m5_budget_check.html
 - 배포 확인 결과: `checks/m5_check.md` 1절
